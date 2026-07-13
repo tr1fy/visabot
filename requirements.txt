@@ -1,0 +1,6 @@
+pydoll-python
+pytest
+requests
+camoufox
+playwright==1.60.0
+selenium

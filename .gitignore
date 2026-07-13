@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+config.ini
+*.log
+chrome_profile/
+
+# Generated artifacts that embed a live Telegram bot token -- these are
+# build output from generate_bookmarklet.py / build_guide.py, never source.
+# Regenerate locally; never commit or deploy from CI.
+guide.html
+bookmarklet_url.txt
+bookmarklet_url_ru.txt
+vfsbot_site/

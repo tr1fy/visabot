@@ -1,0 +1,17 @@
+[VFS]
+email =
+password =
+centre = Italy Visa Application Center - Almaty
+category = D Visa Study
+sub_category = Enrollment at Universities
+; browser_backend selects which automation engine checker.py uses.
+; Valid values: pydoll (Chrome-based, default), camoufox (Firefox-based,
+; anti-detection focused).
+browser_backend = pydoll
+
+[CHECK]
+interval_minutes = 20
+
+[TELEGRAM]
+bot_token =
+channel_id =
