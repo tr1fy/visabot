@@ -1,0 +1,15 @@
+[Unit]
+Description=VFS-Bot scanning loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vfsbot
+WorkingDirectory=/home/vfsbot/VFS-Bot-v2
+ExecStart=/home/vfsbot/VFS-Bot-v2/venv/bin/python3 run_loop.py
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
