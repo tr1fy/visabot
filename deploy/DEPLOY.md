@@ -1,14 +1,25 @@
-# Деплой VFS-Bot на VPS (Hetzner + pydoll)
+# Деплой VFS-Bot на VPS (pydoll)
+
+Все шаги ниже одинаковы для любого провайдера — нужен просто чистый
+Ubuntu 24.04 сервер с root/SSH доступом. Разница только в том, как вы его
+создаёте.
 
 ## 1. Создать сервер
 
-1. Регистрируетесь на hetzner.com (это ваше действие — своя учётка/оплата).
-2. Cloud → New Project → Add Server:
-   - Location: Helsinki (ближе к региону) или Nuremberg/Falkenstein
-   - Image: **Ubuntu 24.04**
-   - Type: **CX22** (2 vCPU, 4 GB RAM, ~€4.35–5.39/мес)
-   - Добавьте свой SSH-ключ
-3. Дождитесь создания, скопируйте IP-адрес сервера.
+**DigitalOcean** (использовали в последний раз):
+1. Регистрируетесь на digitalocean.com (ваше действие — своя учётка/оплата).
+2. Create → Droplets:
+   - Image: **Ubuntu 24.04 (LTS) x64**
+   - Plan: Basic, Regular, **$6/мес** (1 vCPU, 2 GB RAM) — этого достаточно
+   - Region: любой ближайший (Frankfurt/Amsterdam разумный выбор)
+   - Authentication: SSH key (добавьте свой)
+3. Дождитесь создания, скопируйте IP-адрес droplet'а.
+
+**Hetzner** (если вернётесь к нему): Cloud → New Project → Add Server →
+Ubuntu 24.04 → CX22 (~€4.35–5.39/мес) → добавить SSH-ключ.
+
+**Vultr / Contabo**: тот же принцип — Ubuntu 24.04, минимальный/базовый
+план, SSH-ключ.
 
 ## 2. Первичная настройка сервера
 
