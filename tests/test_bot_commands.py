@@ -18,6 +18,20 @@ def test_stop_sets_active_false():
     assert "stopped" in reply.lower()
 
 
+def test_start_with_group_bot_username_suffix():
+    state = BotState(active=False)
+    reply = handle_command("/start@vfsreg_bot", state)
+    assert state.active is True
+    assert "started" in reply.lower()
+
+
+def test_status_with_group_bot_username_suffix():
+    state = BotState(active=True)
+    reply = handle_command("/status@vfsreg_bot", state)
+    assert reply is not None
+    assert "active" in reply.lower()
+
+
 def test_scan_sets_scan_requested():
     state = BotState()
     reply = handle_command("/scan", state)

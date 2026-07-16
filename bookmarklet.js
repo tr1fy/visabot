@@ -106,7 +106,11 @@
   }
 
   function handleCommand(text) {
-    var command = (text || '').trim().split(/\s+/)[0].toLowerCase();
+    // In groups Telegram may suffix commands with the bot's @username
+    // (e.g. "/status@vfsreg_bot") to disambiguate between multiple bots --
+    // strip that before matching, or every command silently gets ignored
+    // in group chats.
+    var command = (text || '').trim().split(/\s+/)[0].split('@')[0].toLowerCase();
     if (command === '/start') {
       state.active = true;
       return '✅ Bot started. Scanning resumed.';

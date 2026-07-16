@@ -40,7 +40,11 @@ def format_status(state: BotState) -> str:
 
 
 def handle_command(text: str, state: BotState) -> Optional[str]:
-    command = text.strip().split()[0].lower() if text.strip() else ""
+    # In groups Telegram may suffix commands with the bot's @username
+    # (e.g. "/status@vfsreg_bot") to disambiguate between multiple bots --
+    # strip that before matching, or every command silently gets ignored
+    # in group chats.
+    command = text.strip().split()[0].split("@")[0].lower() if text.strip() else ""
     if command == "/start":
         state.active = True
         return "✅ Bot started. Scanning resumed."
