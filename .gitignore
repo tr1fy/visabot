@@ -11,5 +11,7 @@ chrome_profile/
 guide.html
 bookmarklet_url.txt
 bookmarklet_url_ru.txt
+bookmarklet_url_group.txt
+diagnostic_bookmarklet_url.txt
 vfsbot_site/
 public/
