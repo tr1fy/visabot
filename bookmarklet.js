@@ -47,7 +47,6 @@
   var INTERVAL_MS = 20 * 60 * 1000; // 20 минут -- сохраняем человеческий темп проверок
   var COMMAND_POLL_MS = 4000; // как часто спрашиваем Telegram про новые команды
   var ACTIVITY_MS = 3 * 60 * 1000; // как часто имитируем активность, чтобы сайт не разлогинил по бездействию
-  var STORAGE_KEY = 'vfsbot_last_notified_date'; // чтобы не слать одно и то же уведомление повторно
   var ROUTE = 'kaz/ru/ita';
   var BODY = {
     countryCode: 'kaz',
@@ -236,18 +235,13 @@
         }
         if (data && data.earliestDate) {
           state.lastCheckText = 'slot found - ' + data.earliestDate;
-          var last = localStorage.getItem(STORAGE_KEY);
-          if (last !== data.earliestDate) {
-            localStorage.setItem(STORAGE_KEY, data.earliestDate);
-            notify('VFS: появился свободный слот! Ближайшая дата - ' + data.earliestDate);
-          }
-          // если дата та же, что в прошлый раз -- молчим, чтобы не спамить
+          notify('VFS: ближайший доступный слот - ' + data.earliestDate);
         } else if (data && data.error) {
           state.lastCheckText = 'error - ' + data.error;
           notify('VFS-Bot: сервер вернул ошибку: ' + data.error);
         } else {
           state.lastCheckText = 'no slots available';
-          localStorage.removeItem(STORAGE_KEY); // слотов снова нет -- следующее появление слота уведомит заново
+          notify('VFS-Bot: свободных слотов пока нет (проверено ' + state.lastCheckTime.toLocaleString() + ')');
         }
       })
       .catch(function (e) {
