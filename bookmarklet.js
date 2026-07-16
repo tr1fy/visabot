@@ -46,6 +46,7 @@
   var LAST_UPDATE_KEY = 'vfsbot_last_update_id_' + TG_CHAT; // namespaced in case >1 generated bookmarklet is ever tested in the same browser
   var INTERVAL_MS = 20 * 60 * 1000; // 20 минут -- сохраняем человеческий темп проверок
   var COMMAND_POLL_MS = 4000; // как часто спрашиваем Telegram про новые команды
+  var ACTIVITY_MS = 3 * 60 * 1000; // как часто имитируем активность, чтобы сайт не разлогинил по бездействию
   var STORAGE_KEY = 'vfsbot_last_notified_date'; // чтобы не слать одно и то же уведомление повторно
   var ROUTE = 'kaz/ru/ita';
   var BODY = {
@@ -75,6 +76,22 @@
     }).catch(function (e) {
       console.log('VFS-Bot: не удалось отправить в Telegram', e);
     });
+  }
+
+  function simulateActivity() {
+    // VFS's own frontend watches for mouse/keyboard/scroll events to reset
+    // its "session timed out due to inactivity" idle timer -- a tab that
+    // only does background fetch() calls never triggers those listeners,
+    // so the page-level session gets killed even though our API calls are
+    // still succeeding. Dispatching harmless synthetic events keeps that
+    // idle timer from firing without actually touching any page content.
+    try {
+      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 1, clientY: 1 }));
+      document.dispatchEvent(new Event('scroll', { bubbles: true }));
+      window.dispatchEvent(new Event('focus'));
+    } catch (e) {
+      console.log('VFS-Bot: не удалось имитировать активность', e);
+    }
   }
 
   function setMyCommands() {
@@ -198,6 +215,7 @@
           console.log('VFS-Bot: сессия истекла (статус ' + r.status + '). Войдите заново и снова нажмите закладку.');
           notify('VFS-Bot: сессия истекла. Пожалуйста, войдите заново и снова нажмите на закладку.');
           clearInterval(window.__vfsBotInterval);
+          clearInterval(window.__vfsBotActivityInterval);
           window.__vfsBotRunning = false;
           return null;
         }
@@ -247,8 +265,10 @@
   window.__vfsBotRunning = true;
   setMyCommands();
   check();
+  simulateActivity();
   window.__vfsBotInterval = setInterval(check, INTERVAL_MS);
   window.__vfsBotCommandInterval = setInterval(pollCommands, COMMAND_POLL_MS);
+  window.__vfsBotActivityInterval = setInterval(simulateActivity, ACTIVITY_MS);
   notify('VFS-Bot запущен. Команды: /start /stop /scan /status. Проверка каждые 20 минут.');
   alert('VFS-Bot запущен -- проверка каждые 20 минут, команды /start /stop /scan /status доступны в Telegram. Не закрывайте и не перезагружайте эту вкладку (в фоне работать может).');
 })();
