@@ -22,6 +22,7 @@
 
   function record(method, url) {
     try {
+      if (String(url).indexOf('api.telegram.org') !== -1) return; // don't log our own instrumentation calls (leaks the bot token into its own report otherwise)
       var key = method + ' ' + url.split('?')[0];
       if (seen[key]) return;
       seen[key] = true;
