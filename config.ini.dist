@@ -15,3 +15,12 @@ interval_minutes = 20
 [TELEGRAM]
 bot_token =
 channel_id =
+
+[RELAY]
+; Public origin of the deployed relay (the Vercel project), e.g.
+;   url = https://visabot-nine.vercel.app
+; The bookmarklet talks only to this; the bot token never reaches the browser.
+url =
+; Optional. Leave empty to derive user keys from bot_token instead.
+; Must match RELAY_SECRET in the relay's environment if set there.
+secret =

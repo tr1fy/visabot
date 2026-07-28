@@ -1,52 +1,71 @@
 // VFS-Bot-v2 bookmarklet (readable source)
 //
-// Install: minify this into a single `javascript:(function(){...})();` URL
-// and save it as a Safari bookmark. Click that bookmark while on any
-// visa.vfsglobal.com page you're logged into.
+// Install: minify this into a single `javascript:(function(){...})();` URL and
+// save it as a browser bookmark. Click that bookmark while on any
+// visa.vfsglobal.com page you are already logged into.
 //
-// What it does: reads the JWT already sitting in sessionStorage (no login
-// automation, no Cloudflare interaction -- this is just JS running inside
-// your own authenticated tab), polls VFS's internal slot-check API on an
-// interval, and pings Telegram every check with the current earliest-slot
-// date.
+// What it does: reads the JWT the site itself put in sessionStorage after your
+// manual login, polls VFS's slot-check API on a 20-minute interval, and reports
+// to Telegram. No login automation, no captcha interaction, no Cloudflare
+// interaction -- this is just JS running inside your own authenticated tab.
 //
-// Multi-user design: TG_TOKEN is one shared bot for everyone. TG_CHAT is
-// baked into this file at generation time (see generate_bookmarklet.py) --
-// each user gets their own unique bookmarklet URL with their own chat ID
-// already embedded. Deliberately NOT resolved via prompt()+localStorage:
-// that approach silently reuses whatever chat ID was cached the first time
-// a given browser was used, which breaks the moment someone switches
-// Telegram accounts in the same browser and re-fires the same bookmark.
-// A unique URL per user has no such ambiguity.
+// ---------------------------------------------------------------------------
+// Security model (changed 2026-07-28 -- read this before touching the relay)
+// ---------------------------------------------------------------------------
+// This file no longer contains the Telegram bot token. It used to, and that was
+// a real leak: build_guide.js baked the live token into public/index.html,
+// which Vercel serves publicly, so the token was published on the internet.
+// Anyone who opened the guide page could take it, read every user's chat via
+// getUpdates, and send messages as the bot.
 //
-// Command polling deliberately never sends `offset` to Telegram's
-// getUpdates -- that parameter permanently acknowledges updates *for the
-// whole bot*, not just the caller, so if multiple users' tabs are polling
-// concurrently and one of them confirms an offset, everyone else's
-// commands could be silently dropped before their own tab ever sees them.
-// Instead each browser tracks (in its own localStorage) the highest
-// update_id it has already handled *from its own chat* and ignores
-// anything at or below that -- duplicate-safe locally, and harmless to
-// other users since nothing is ever consumed server-side.
+// Now the token lives only in the relay's server environment. This file carries
+// __USER_KEY__ -- an HMAC of this user's chat id -- which can do exactly two
+// things: send a message to that one chat, and read commands from that one
+// chat. It is useless for anything else.
 //
-// Confirmed live (2026-07-11/12):
-// - POST .../appointment/CheckIsSlotAvailable with just `authorize` (=
-//   sessionStorage.JWT) + credentials:'include' cookies + a `route` header
-//   returns 200 with real slot-date data -- no `clientSource` needed.
-// - Time-of-day slot data (via .../appointment/timeslot) was tried and
-//   dropped: that endpoint requires a `clientSource` header that VFS's app
-//   generates dynamically per request (likely RSA-encrypted client-side)
-//   and rotates constantly -- a captured value goes stale within a short
-//   window and can't be reliably reused for periodic background checks.
-//   Date-only is the stable, supported mode.
+// IMPORTANT: the previously published bot token must be revoked and reissued
+// via @BotFather. Deploying this file does not un-publish a token that has
+// already been public.
+//
+// ---------------------------------------------------------------------------
+// Why there is no simulateActivity() any more
+// ---------------------------------------------------------------------------
+// The old version dispatched synthetic mousemove/scroll/focus events every 3
+// minutes, hoping to reset a server-side idle timeout. That cannot work by
+// construction: synthetic events never leave the browser, so they cannot reset
+// a timer that lives on VFS's servers. Field results in the spec agree -- the
+// session died anyway. Worse, synthetic events carry isTrusted:false, which is
+// a well-known automation signal, so the code was plausibly doing harm. It has
+// been removed and replaced with something that actually answers the question:
+// decoding the JWT's own `exp` claim, so we know when the session ends instead
+// of guessing (see readSession()).
+//
+// ---------------------------------------------------------------------------
+// Time-of-day slots (spec stage 2)
+// ---------------------------------------------------------------------------
+// .../appointment/timeslot requires a `clientSource` header that VFS's frontend
+// generates and signs per request. We do NOT lift that generator out of the
+// page to sign our own requests -- that is defeating an anti-automation control
+// and it breaks on every frontend deploy.
+//
+// Instead: captureTimeslots() passively watches the requests THE PAGE ITSELF
+// makes. When you open the time picker on the site by hand, the page signs its
+// own request and we simply read the answer off the wire. Times captured that
+// way are attached to the next notification. Fully automatic times would need
+// the bot to drive the site's UI, which a bookmarklet cannot do reliably from
+// an arbitrary page -- see the browser-driven variant for that.
 
 (function () {
-  var TG_TOKEN = '__BOT_TOKEN__'; // replaced at generation time from config.ini, never committed as a literal
-  var TG_CHAT = '__CHAT_ID__'; // replaced per user by generate_bookmarklet.py
-  var LAST_UPDATE_KEY = 'vfsbot_last_update_id_' + TG_CHAT; // namespaced in case >1 generated bookmarklet is ever tested in the same browser
-  var INTERVAL_MS = 20 * 60 * 1000; // 20 минут -- сохраняем человеческий темп проверок
-  var COMMAND_POLL_MS = 4000; // как часто спрашиваем Telegram про новые команды
-  var ACTIVITY_MS = 3 * 60 * 1000; // как часто имитируем активность, чтобы сайт не разлогинил по бездействию
+  var RELAY_URL = '__RELAY_URL__'; // e.g. https://visabot-nine.vercel.app
+  var TG_CHAT = '__CHAT_ID__'; // this user's numeric Telegram chat id
+  var USER_KEY = '__USER_KEY__'; // HMAC of TG_CHAT, minted by the relay
+
+  var CURSOR_KEY = 'vfsbot_cursor_' + TG_CHAT;
+  var INTERVAL_MS = 20 * 60 * 1000; // unchanged -- spec forbids raising VFS request frequency
+  var COMMAND_POLL_MS = 6000; // hits our own relay, not Telegram
+  var EXPIRY_WARN_MS = 3 * 60 * 1000; // warn this long before the JWT expires
+  var TIMESLOT_FRESH_MS = 30 * 60 * 1000;
+
   var ROUTE = 'kaz/ru/ita';
   var BODY = {
     countryCode: 'kaz',
@@ -61,125 +80,50 @@
   var state = {
     active: true,
     scanRequested: false,
+    expired: false,
     lastCheckText: null,
-    lastCheckTime: null
+    lastCheckTime: null,
+    lastRawSample: null, // kept for /status when a response shape is unrecognised
+    session: null, // { issuedAt, expiresAt } decoded from the JWT
+    times: null, // { date, times: [...], capturedAt } from captureTimeslots()
+    unknownShapeCount: 0
   };
-  var lastUpdateId = parseInt(localStorage.getItem(LAST_UPDATE_KEY), 10);
-  if (isNaN(lastUpdateId)) lastUpdateId = null; // null until bootstrapped below, so we never replay history
 
-  function notify(text) {
-    fetch('https://api.telegram.org/bot' + TG_TOKEN + '/sendMessage', {
+  var cursor = parseInt(localStorage.getItem(CURSOR_KEY), 10);
+  if (isNaN(cursor)) cursor = null;
+
+  // ---------------------------------------------------------------- relay ---
+
+  function notify(text, silent) {
+    return fetch(RELAY_URL + '/api/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: TG_CHAT, text: text })
+      body: JSON.stringify({ chatId: TG_CHAT, key: USER_KEY, text: text, silent: !!silent })
     }).catch(function (e) {
       console.log('VFS-Bot: не удалось отправить в Telegram', e);
     });
   }
 
-  function simulateActivity() {
-    // VFS's own frontend watches for mouse/keyboard/scroll events to reset
-    // its "session timed out due to inactivity" idle timer -- a tab that
-    // only does background fetch() calls never triggers those listeners,
-    // so the page-level session gets killed even though our API calls are
-    // still succeeding. Dispatching harmless synthetic events keeps that
-    // idle timer from firing without actually touching any page content.
-    try {
-      document.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 1, clientY: 1 }));
-      document.dispatchEvent(new Event('scroll', { bubbles: true }));
-      window.dispatchEvent(new Event('focus'));
-    } catch (e) {
-      console.log('VFS-Bot: не удалось имитировать активность', e);
-    }
-  }
-
-  function setMyCommands() {
-    fetch('https://api.telegram.org/bot' + TG_TOKEN + '/setMyCommands', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        commands: [
-          { command: 'start', description: 'Resume scanning' },
-          { command: 'stop', description: 'Pause scanning (bot keeps listening for commands)' },
-          { command: 'scan', description: 'Run a scan immediately' },
-          { command: 'status', description: 'Show whether the bot is active and the last check result' }
-        ]
-      })
-    }).catch(function (e) {
-      console.log('VFS-Bot: не удалось зарегистрировать команды', e);
-    });
-  }
-
-  function formatStatus() {
-    var lines = ['Status: ' + (state.active ? '🟢 active' : '🔴 stopped')];
-    if (state.lastCheckTime) {
-      lines.push('Last check: ' + state.lastCheckTime.toLocaleString());
-      lines.push('Last result: ' + state.lastCheckText);
-    } else {
-      lines.push('No checks run yet');
-    }
-    return lines.join('\n');
-  }
-
-  function handleCommand(text) {
-    // In groups Telegram may suffix commands with the bot's @username
-    // (e.g. "/status@vfsreg_bot") to disambiguate between multiple bots --
-    // strip that before matching, or every command silently gets ignored
-    // in group chats.
-    var command = (text || '').trim().split(/\s+/)[0].split('@')[0].toLowerCase();
-    if (command === '/start') {
-      state.active = true;
-      return '✅ Bot started. Scanning resumed.';
-    }
-    if (command === '/stop') {
-      state.active = false;
-      return '⏸️ Bot stopped. Scanning paused (still listening for commands).';
-    }
-    if (command === '/scan') {
-      state.scanRequested = true;
-      check();
-      return '🔍 Manual scan queued, will run shortly.';
-    }
-    if (command === '/status') {
-      return formatStatus();
-    }
-    return null;
-  }
-
   function pollCommands() {
-    // Deliberately no `offset` param -- see the comment at the top of this
-    // file. We ask for the full unconfirmed backlog every time and filter
-    // locally, so we never steal another user's commands off the queue.
-    fetch('https://api.telegram.org/bot' + TG_TOKEN + '/getUpdates?timeout=0')
+    var url =
+      RELAY_URL +
+      '/api/commands?chatId=' +
+      encodeURIComponent(TG_CHAT) +
+      '&key=' +
+      encodeURIComponent(USER_KEY) +
+      (cursor === null ? '' : '&after=' + cursor);
+
+    fetch(url)
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data || !data.result) return;
-
-        if (lastUpdateId === null) {
-          // First poll ever on this browser: don't replay old commands
-          // (possibly from other users, or from before this tab existed),
-          // just establish a starting point.
-          var maxSeen = 0;
-          data.result.forEach(function (u) {
-            if (u.update_id > maxSeen) maxSeen = u.update_id;
-          });
-          lastUpdateId = maxSeen;
-          localStorage.setItem(LAST_UPDATE_KEY, String(lastUpdateId));
-          return;
-        }
-
-        data.result.forEach(function (update) {
-          if (update.update_id <= lastUpdateId) return;
-          var message = update.message || update.channel_post;
-          if (message) {
-            var chatId = String(message.chat && message.chat.id);
-            if (chatId === TG_CHAT) {
-              lastUpdateId = update.update_id;
-              localStorage.setItem(LAST_UPDATE_KEY, String(lastUpdateId));
-              var reply = handleCommand(message.text);
-              if (reply) notify(reply);
-            }
-          }
+        if (!data || typeof data.cursor !== 'number') return;
+        cursor = data.cursor;
+        localStorage.setItem(CURSOR_KEY, String(cursor));
+        // On the very first poll the relay returns no commands, only a cursor,
+        // so a freshly opened tab never replays yesterday's /stop.
+        (data.commands || []).forEach(function (cmd) {
+          var reply = handleCommand(cmd.text);
+          if (reply) notify(reply);
         });
       })
       .catch(function (e) {
@@ -187,18 +131,237 @@
       });
   }
 
+  // -------------------------------------------------------------- session ---
+
+  function decodeJwtPayload(jwt) {
+    try {
+      var parts = String(jwt).split('.');
+      if (parts.length < 2) return null;
+      var b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var raw = atob(b64);
+      try {
+        return JSON.parse(decodeURIComponent(escape(raw)));
+      } catch (inner) {
+        return JSON.parse(raw);
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Answers the spec's open question (section 3) directly: the token states its
+  // own lifetime, so there is nothing to guess. The 21-44 minute spread the
+  // spec observed is what you get when a fixed-length token is read at varying
+  // delays after login -- the clock starts at login, not at the bookmarklet click.
+  function readSession(jwt) {
+    var payload = decodeJwtPayload(jwt);
+    if (!payload || !payload.exp) return null;
+    return {
+      issuedAt: payload.iat ? new Date(payload.iat * 1000) : null,
+      expiresAt: new Date(payload.exp * 1000)
+    };
+  }
+
+  function describeSession() {
+    if (!state.session) return 'срок действия сессии неизвестен (в токене нет exp)';
+    var msLeft = state.session.expiresAt.getTime() - Date.now();
+    var minLeft = Math.round(msLeft / 60000);
+    var lifetime =
+      state.session.issuedAt
+        ? Math.round((state.session.expiresAt - state.session.issuedAt) / 60000) + ' мин'
+        : 'неизвестно';
+    return (
+      'Сессия истекает в ' + state.session.expiresAt.toLocaleTimeString() +
+      ' (осталось ' + minLeft + ' мин, полный срок токена: ' + lifetime + ')'
+    );
+  }
+
+  function expireNow(reason) {
+    if (state.expired) return;
+    state.expired = true;
+    state.active = false;
+    state.lastCheckTime = new Date();
+    state.lastCheckText = 'session expired (' + reason + ')';
+    clearInterval(window.__vfsBotInterval);
+    clearTimeout(window.__vfsBotExpiryTimer);
+    clearTimeout(window.__vfsBotWarnTimer);
+    notify(
+      '⛔ Сессия VFS истекла (' + reason + ').\n\n' +
+        'Что делать: обновите страницу, войдите в аккаунт заново и нажмите закладку ещё раз. ' +
+        'Проверки возобновятся автоматически.\n\n' +
+        'Команда /start сессию не воскрешает — нужен именно повторный вход.'
+    );
+  }
+
+  function scheduleExpiry() {
+    clearTimeout(window.__vfsBotExpiryTimer);
+    clearTimeout(window.__vfsBotWarnTimer);
+    if (!state.session) return;
+    var msLeft = state.session.expiresAt.getTime() - Date.now();
+    if (msLeft <= 0) return;
+    if (msLeft > EXPIRY_WARN_MS) {
+      window.__vfsBotWarnTimer = setTimeout(function () {
+        notify('⚠️ Сессия VFS истекает через ~3 минуты. Скоро понадобится повторный вход.');
+      }, msLeft - EXPIRY_WARN_MS);
+    }
+    window.__vfsBotExpiryTimer = setTimeout(function () {
+      expireNow('истёк срок токена');
+    }, msLeft);
+  }
+
+  // ------------------------------------------------------- timeslot capture ---
+
+  function extractTimes(node, out, depth) {
+    if (!node || depth > 6 || out.length > 60) return out;
+    if (typeof node === 'string') {
+      if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(node.trim())) out.push(node.trim());
+      return out;
+    }
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i++) extractTimes(node[i], out, depth + 1);
+      return out;
+    }
+    if (typeof node === 'object') {
+      for (var k in node) {
+        if (Object.prototype.hasOwnProperty.call(node, k)) extractTimes(node[k], out, depth + 1);
+      }
+    }
+    return out;
+  }
+
+  function recordTimeslots(bodyText) {
+    try {
+      var data = JSON.parse(bodyText);
+      var times = [];
+      extractTimes(data, times, 0);
+      if (!times.length) return;
+      var unique = times.filter(function (t, i) { return times.indexOf(t) === i; }).sort();
+      state.times = { times: unique, capturedAt: new Date() };
+      console.log('VFS-Bot: перехвачены времена слотов', unique);
+    } catch (e) {
+      /* not JSON -- ignore */
+    }
+  }
+
+  // Passive only: we never issue a timeslot request ourselves, we just read the
+  // answer to a request the page made on its own.
+  function captureTimeslots() {
+    if (window.__vfsBotHooked) return;
+    window.__vfsBotHooked = true;
+
+    var isTimeslot = function (url) { return /appointment\/timeslot/i.test(String(url)); };
+
+    var origFetch = window.fetch;
+    window.fetch = function (input, init) {
+      var url = typeof input === 'string' ? input : (input && input.url) || '';
+      var promise = origFetch.apply(this, arguments);
+      if (isTimeslot(url)) {
+        promise
+          .then(function (res) { return res.clone().text(); })
+          .then(recordTimeslots)
+          .catch(function () {});
+      }
+      return promise;
+    };
+
+    var origOpen = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function (method, url) {
+      if (isTimeslot(url)) {
+        this.addEventListener('load', function () {
+          try { recordTimeslots(this.responseText); } catch (e) {}
+        });
+      }
+      return origOpen.apply(this, arguments);
+    };
+  }
+
+  function freshTimesLine() {
+    if (!state.times) return '';
+    if (Date.now() - state.times.capturedAt.getTime() > TIMESLOT_FRESH_MS) return '';
+    return '\nВремена (перехвачены с сайта в ' +
+      state.times.capturedAt.toLocaleTimeString() + '): ' +
+      state.times.times.join(', ');
+  }
+
+  // ------------------------------------------------------------- classify ---
+
+  /* --8<-- classifyResponse --8<-- */
+  // Maps an HTTP status + raw body to exactly one outcome.
+  //
+  // The critical rule, and the reason this function exists: an unrecognised
+  // response shape is 'unknown-shape', NEVER 'no-slots'. The previous version
+  // ended with a bare `else` that reported every unfamiliar payload as "свободных
+  // слотов пока нет", so a single field rename on VFS's side would have had the
+  // bot cheerfully reporting "no slots" forever while silently broken.
+  function classifyResponse(httpStatus, rawText) {
+    if (httpStatus === 401 || httpStatus === 403) {
+      return { kind: 'session-expired', detail: 'HTTP ' + httpStatus };
+    }
+    if (httpStatus >= 500) {
+      return { kind: 'server-error', detail: 'HTTP ' + httpStatus };
+    }
+    if (rawText == null || rawText === '') {
+      return { kind: 'unknown-shape', detail: 'пустой ответ' };
+    }
+
+    var data;
+    try {
+      data = JSON.parse(rawText);
+    } catch (e) {
+      return { kind: 'unparseable', detail: String(rawText).slice(0, 200) };
+    }
+    if (data === null || typeof data !== 'object') {
+      return { kind: 'unknown-shape', detail: String(rawText).slice(0, 200) };
+    }
+
+    if (data.earliestDate) {
+      return { kind: 'slot', date: data.earliestDate };
+    }
+
+    // VFS reports "no availability" as an error object with an informational
+    // code. That is a normal negative result, not a failure, so it is matched
+    // before the generic error branch below.
+    var err = data.error;
+    if (err && typeof err === 'object') {
+      if (err.code === 1035 || err.type === 'Information') {
+        return { kind: 'no-slots' };
+      }
+      return { kind: 'server-error', detail: JSON.stringify(err).slice(0, 200) };
+    }
+    if (typeof err === 'string' && err) {
+      return { kind: 'server-error', detail: err.slice(0, 200) };
+    }
+
+    // Some tenants answer with an explicit negative flag instead of an error.
+    if (data.earliestDate === null || data.earliestDate === '') {
+      return { kind: 'no-slots' };
+    }
+
+    return { kind: 'unknown-shape', detail: String(rawText).slice(0, 200) };
+  }
+  /* --8<-- end classifyResponse --8<-- */
+
+  // ----------------------------------------------------------------- check ---
+
   function check() {
+    if (state.expired) return;
     if (!state.active && !state.scanRequested) return;
     state.scanRequested = false;
+
     var jwt = sessionStorage.getItem('JWT');
     var email = sessionStorage.getItem('logged_email');
     if (!jwt) {
-      console.log('VFS-Bot: в sessionStorage нет JWT -- вы вошли в аккаунт на этой вкладке?');
+      expireNow('в этой вкладке нет JWT — вы не вошли в аккаунт');
       return;
     }
 
-    var body = Object.assign({}, BODY, { loginUser: email });
+    if (!state.session) {
+      state.session = readSession(jwt);
+      scheduleExpiry();
+    }
 
+    var status = 0;
     fetch('https://lift-api.vfsglobal.com/appointment/CheckIsSlotAvailable', {
       method: 'POST',
       credentials: 'include',
@@ -207,42 +370,54 @@
         authorize: jwt,
         route: ROUTE
       },
-      body: JSON.stringify(body)
+      body: JSON.stringify(Object.assign({}, BODY, { loginUser: email }))
     })
       .then(function (r) {
-        if (r.status === 401 || r.status === 403) {
-          console.log('VFS-Bot: сессия истекла (статус ' + r.status + '). Войдите заново и снова нажмите закладку.');
-          notify('VFS-Bot: сессия истекла. Пожалуйста, войдите заново и снова нажмите на закладку.');
-          clearInterval(window.__vfsBotInterval);
-          clearInterval(window.__vfsBotActivityInterval);
-          window.__vfsBotRunning = false;
-          return null;
-        }
+        status = r.status;
         return r.text();
       })
-      .then(function (t) {
-        if (t == null) return;
-        console.log('VFS-Bot проверка ' + new Date().toLocaleTimeString() + ': ' + t);
+      .then(function (raw) {
         state.lastCheckTime = new Date();
-        var data;
-        try {
-          data = JSON.parse(t);
-        } catch (e) {
-          console.log('VFS-Bot: ответ не в формате JSON, пропускаем', e);
-          state.lastCheckText = 'error - invalid server response';
-          notify('VFS-Bot: ошибка проверки (некорректный ответ сервера).');
+        var result = classifyResponse(status, raw);
+        console.log('VFS-Bot проверка ' + state.lastCheckTime.toLocaleTimeString() + ':', result.kind, raw);
+
+        if (result.kind === 'session-expired') {
+          expireNow(result.detail);
           return;
         }
-        if (data && data.earliestDate) {
-          state.lastCheckText = 'slot found - ' + data.earliestDate;
-          notify('VFS: ближайший доступный слот - ' + data.earliestDate);
-        } else if (data && data.error) {
-          state.lastCheckText = 'error - ' + data.error;
-          notify('VFS-Bot: сервер вернул ошибку: ' + data.error);
-        } else {
-          state.lastCheckText = 'no slots available';
-          notify('VFS-Bot: свободных слотов пока нет (проверено ' + state.lastCheckTime.toLocaleString() + ')');
+
+        if (result.kind === 'slot') {
+          state.lastCheckText = 'slot found - ' + result.date;
+          notify('🎉 VFS: ближайший доступный слот — ' + result.date + freshTimesLine());
+          return;
         }
+
+        if (result.kind === 'no-slots') {
+          state.lastCheckText = 'no slots available';
+          notify(
+            'VFS-Bot: свободных слотов пока нет (проверено ' +
+              state.lastCheckTime.toLocaleString() + ')',
+            true // routine result -- delivered silently so it does not buzz all day
+          );
+          return;
+        }
+
+        if (result.kind === 'server-error') {
+          state.lastCheckText = 'error - ' + result.detail;
+          notify('VFS-Bot: сервер вернул ошибку: ' + result.detail);
+          return;
+        }
+
+        // unparseable / unknown-shape: explicitly NOT "no slots".
+        state.unknownShapeCount++;
+        state.lastCheckText = 'unrecognised response - ' + result.detail;
+        state.lastRawSample = result.detail;
+        notify(
+          '⚠️ VFS-Bot: не удалось разобрать ответ сервера.\n\n' +
+            'Это НЕ значит, что слотов нет — значит, формат ответа изменился ' +
+            'или сайт ответил чем-то неожиданным. Проверьте вручную.\n\n' +
+            'Ответ: ' + result.detail
+        );
       })
       .catch(function (e) {
         console.log('VFS-Bot: проверка не удалась', e);
@@ -252,17 +427,93 @@
       });
   }
 
+  // -------------------------------------------------------------- commands ---
+
+  function formatStatus() {
+    var lines = [
+      'Status: ' +
+        (state.expired
+          ? '⛔ сессия истекла — войдите заново и нажмите закладку'
+          : state.active
+          ? '🟢 active'
+          : '🔴 stopped')
+    ];
+    lines.push(describeSession());
+    if (state.lastCheckTime) {
+      lines.push('Last check: ' + state.lastCheckTime.toLocaleString());
+      lines.push('Last result: ' + state.lastCheckText);
+    } else {
+      lines.push('No checks run yet');
+    }
+    if (state.times) {
+      lines.push(
+        'Времена (перехвачены ' + state.times.capturedAt.toLocaleTimeString() + '): ' +
+          state.times.times.join(', ')
+      );
+    } else {
+      lines.push('Времена слотов: не перехвачены — откройте выбор времени на сайте вручную');
+    }
+    if (state.unknownShapeCount) {
+      lines.push('⚠️ неразобранных ответов: ' + state.unknownShapeCount);
+    }
+    return lines.join('\n');
+  }
+
+  function handleCommand(text) {
+    // In groups Telegram suffixes commands with the bot's @username.
+    var command = (text || '').trim().split(/\s+/)[0].split('@')[0].toLowerCase();
+
+    if (command === '/start') {
+      if (state.expired) return '⛔ Сессия истекла — /start её не воскресит. Войдите заново и нажмите закладку.';
+      state.active = true;
+      return '✅ Проверка возобновлена.';
+    }
+    if (command === '/stop') {
+      state.active = false;
+      return '⏸️ Проверка приостановлена (команды по-прежнему слушаю).';
+    }
+    if (command === '/scan') {
+      if (state.expired) return '⛔ Сессия истекла — /scan её не воскресит. Войдите заново и нажмите закладку.';
+      state.scanRequested = true;
+      check();
+      return '🔍 Проверяю прямо сейчас.';
+    }
+    if (command === '/status') {
+      return formatStatus();
+    }
+    return null;
+  }
+
+  // ------------------------------------------------------------------ boot ---
+
   if (window.__vfsBotRunning) {
     alert('VFS-Bot уже запущен на этой вкладке.');
     return;
   }
+  if (RELAY_URL.indexOf('__') === 0 || USER_KEY.indexOf('__') === 0) {
+    alert('VFS-Bot: закладка не сгенерирована до конца — возьмите ссылку со страницы установки.');
+    return;
+  }
   window.__vfsBotRunning = true;
-  setMyCommands();
+
+  captureTimeslots();
+
+  var bootJwt = sessionStorage.getItem('JWT');
+  state.session = bootJwt ? readSession(bootJwt) : null;
+  scheduleExpiry();
+
   check();
-  simulateActivity();
   window.__vfsBotInterval = setInterval(check, INTERVAL_MS);
   window.__vfsBotCommandInterval = setInterval(pollCommands, COMMAND_POLL_MS);
-  window.__vfsBotActivityInterval = setInterval(simulateActivity, ACTIVITY_MS);
-  notify('VFS-Bot запущен. Команды: /start /stop /scan /status. Проверка каждые 20 минут.');
-  alert('VFS-Bot запущен -- проверка каждые 20 минут, команды /start /stop /scan /status доступны в Telegram. Не закрывайте и не перезагружайте эту вкладку (в фоне работать может).');
+
+  notify(
+    'VFS-Bot запущен. Проверка каждые 20 минут.\n' +
+      describeSession() + '\n' +
+      'Команды: /start /stop /scan /status'
+  );
+  alert(
+    'VFS-Bot запущен — проверка каждые 20 минут, команды /start /stop /scan /status в Telegram.\n\n' +
+      describeSession() + '\n\n' +
+      'Не закрывайте эту вкладку (можно свернуть в фон).'
+  );
 })();

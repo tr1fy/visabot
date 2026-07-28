@@ -205,7 +205,7 @@
 <div class="wrap">
 
   <h1>🔔 VFS-Bot</h1>
-  <p class="subtitle">Инструкция и генератор персональной закладки. Всё работает прямо в этой странице — ничего никуда не отправляется, кроме самого Telegram.</p>
+  <p class="subtitle">Инструкция и генератор персональной закладки. Ничего не устанавливается: проверка идёт прямо в вашей вкладке с сайтом VFS, а уведомления уходят в Telegram через наш релей.</p>
 
   <div class="callout ok">
     <strong>Как это работает в двух словах</strong>
@@ -225,12 +225,18 @@
 
   <h2>Шаг 3. Сгенерировать свою закладку</h2>
   <div class="card">
-    <p>Введите ваш chat ID из шага 2 и нажмите «Сгенерировать». У каждого человека — своя уникальная ссылка на закладку: два разных человека никогда не должны использовать одну и ту же ссылку, иначе уведомления и команды могут перепутаться между аккаунтами.</p>
+    <p>Введите ваш chat ID из шага 2 и нажмите «Прислать код». Бот отправит вам в Telegram шестизначный код — введите его ниже. Это подтверждает, что чат действительно ваш, и не даёт постороннему сгенерировать ссылку на чужой ID.</p>
 
     <div class="row">
       <input type="text" id="chat-id-input" placeholder="Например: 715697717" inputmode="numeric">
+      <button id="send-code-btn">Прислать код</button>
+    </div>
+
+    <div class="row" id="code-row" style="display:none; margin-top:12px;">
+      <input type="text" id="code-input" placeholder="Код из Telegram, 6 цифр" inputmode="numeric" maxlength="6">
       <button id="generate-btn">Сгенерировать</button>
     </div>
+
     <div class="error-text" id="error-text"></div>
 
     <div id="result">
@@ -297,11 +303,11 @@
 
   <div class="callout warn">
     <strong>Про приватность</strong>
-    Ссылка на закладку содержит токен общего Telegram-бота (он и так уже есть в коде страницы — иначе бот не смог бы отправлять сообщения). Не публикуйте свою ссылку на закладку публично: тот, у кого она есть, технически может слать сообщения от имени бота. Делитесь ссылкой только напрямую с тем человеком, для кого она сгенерирована.
+    Ссылка на закладку содержит ваш персональный ключ. Этот ключ умеет ровно две вещи: отправлять сообщения в <em>ваш</em> чат и читать команды из <em>вашего</em> чата — ничего больше. Токена бота в ссылке нет, он остаётся на сервере. Всё же не публикуйте свою ссылку: тот, у кого она есть, сможет слать сообщения вам в чат.
   </div>
 
   <footer>
-    VFS-Bot — работает полностью на стороне браузера, ничего не устанавливается и не отправляется на сторонние серверы, кроме Telegram и самого сайта VFS.
+    VFS-Bot — проверка выполняется в вашем браузере, в вашей же залогиненной вкладке. Наружу уходят только запросы к сайту VFS и к релею, который пересылает сообщения в Telegram. Логин и капчу всегда проходите вы сами.
   </footer>
 </div>
 
@@ -319,7 +325,15 @@ function encodeBookmarklet(s) {
     var codePoint = s.codePointAt(i);
     var ch = String.fromCodePoint(codePoint);
     i += ch.length;
-    if (ch === '\n') {
+    if (ch === '%') {
+      // Must come first: a bare '%' in the source (e.g. the modulo operator in
+      // `b64.length % 4`) reads as the start of a percent-escape and corrupts
+      // or truncates the whole bookmarklet when the browser decodes the URL.
+      out.push('%25');
+    } else if (ch === '#') {
+      // A bare '#' would start the URL fragment and silently cut the script off.
+      out.push('%23');
+    } else if (ch === '\n') {
       out.push('%0A');
     } else if (ch === '*') {
       out.push('%2A');
@@ -337,12 +351,23 @@ function encodeBookmarklet(s) {
   return out.join('');
 }
 
-function generateUrl(chatId) {
-  var source = BOOKMARKLET_SOURCE.split('__CHAT_ID__').join(chatId);
+var RELAY_URL = '__RELAY_URL__';
+
+// The bookmarklet no longer carries the bot token, so the page cannot simply
+// splice one in. Instead the relay mints a per-user key, but only after the
+// visitor proves they can read that Telegram chat by echoing back a code the
+// bot sent there.
+function generateUrl(chatId, userKey) {
+  var source = BOOKMARKLET_SOURCE
+    .split('__CHAT_ID__').join(chatId)
+    .split('__USER_KEY__').join(userKey);
   return 'javascript:' + encodeBookmarklet(source);
 }
 
 var input = document.getElementById('chat-id-input');
+var codeRow = document.getElementById('code-row');
+var codeInput = document.getElementById('code-input');
+var sendCodeBtn = document.getElementById('send-code-btn');
 var btn = document.getElementById('generate-btn');
 var errorText = document.getElementById('error-text');
 var result = document.getElementById('result');
@@ -351,24 +376,104 @@ var link = document.getElementById('bookmarklet-link');
 var copyBtn = document.getElementById('copy-btn');
 var copyStatus = document.getElementById('copy-status');
 
-function doGenerate() {
-  var chatId = input.value.trim();
-  errorText.style.display = 'none';
-  if (!/^-?\d+$/.test(chatId)) {
-    errorText.textContent = 'Chat ID должен быть числом (его даёт @userinfobot). Проверьте, что скопировали только цифры.';
-    errorText.style.display = 'block';
-    result.style.display = 'none';
-    return;
-  }
-  var url = generateUrl(chatId);
-  urlBox.value = url;
-  link.href = url;
-  result.style.display = 'block';
-  copyStatus.textContent = '';
+var ERRORS = {
+  bad_chat_id: 'Chat ID должен быть числом (его даёт @userinfobot). Проверьте, что скопировали только цифры.',
+  cannot_message_chat: 'Бот не может вам написать. Откройте @vfsreg_bot в Telegram, нажмите Start и попробуйте снова.',
+  bad_code: 'Код неверный или устарел. Запросите новый и введите его в течение 10 минут.',
+  forbidden: 'Ключ не принят сервером. Запросите код заново.'
+};
+
+function showError(msg) {
+  errorText.textContent = msg;
+  errorText.style.display = 'block';
 }
 
+function clearError() {
+  errorText.style.display = 'none';
+}
+
+function currentChatId() {
+  return input.value.trim();
+}
+
+function post(path, payload) {
+  return fetch(RELAY_URL + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  }).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (data) {
+      return { ok: r.ok, data: data };
+    });
+  });
+}
+
+function doSendCode() {
+  var chatId = currentChatId();
+  clearError();
+  result.style.display = 'none';
+  if (!/^-?\d+$/.test(chatId)) {
+    showError(ERRORS.bad_chat_id);
+    return;
+  }
+  sendCodeBtn.disabled = true;
+  sendCodeBtn.textContent = 'Отправляю…';
+  post('/api/enroll', { chatId: chatId })
+    .then(function (res) {
+      if (!res.ok) {
+        showError(ERRORS[res.data && res.data.error] || 'Не удалось отправить код. Попробуйте ещё раз.');
+        return;
+      }
+      codeRow.style.display = 'flex';
+      codeInput.focus();
+    })
+    .catch(function () {
+      showError('Сервер недоступен. Попробуйте через минуту.');
+    })
+    .then(function () {
+      sendCodeBtn.disabled = false;
+      sendCodeBtn.textContent = 'Прислать код';
+    });
+}
+
+function doGenerate() {
+  var chatId = currentChatId();
+  var code = codeInput.value.trim();
+  clearError();
+  if (!/^\d{6}$/.test(code)) {
+    showError('Введите шестизначный код из Telegram.');
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Проверяю…';
+  post('/api/enroll', { chatId: chatId, code: code })
+    .then(function (res) {
+      if (!res.ok || !res.data || !res.data.key) {
+        showError(ERRORS[res.data && res.data.error] || 'Не удалось подтвердить код.');
+        result.style.display = 'none';
+        return;
+      }
+      var url = generateUrl(chatId, res.data.key);
+      urlBox.value = url;
+      link.href = url;
+      result.style.display = 'block';
+      copyStatus.textContent = '';
+    })
+    .catch(function () {
+      showError('Сервер недоступен. Попробуйте через минуту.');
+    })
+    .then(function () {
+      btn.disabled = false;
+      btn.textContent = 'Сгенерировать';
+    });
+}
+
+sendCodeBtn.addEventListener('click', doSendCode);
 btn.addEventListener('click', doGenerate);
 input.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') doSendCode();
+});
+codeInput.addEventListener('keydown', function (e) {
   if (e.key === 'Enter') doGenerate();
 });
 
