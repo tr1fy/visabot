@@ -1,0 +1,24 @@
+# Vercel builds only two things here: the static guide page (build_guide.js ->
+# public/) and the relay functions in api/. Everything below belongs to the
+# local/VPS Python bot and has no business being uploaded.
+#
+# This file is load-bearing, not just tidiness: requirements.txt in the repo
+# root makes Vercel detect the whole project as Python and fail the build with
+# "No python entrypoint found" before it ever looks at package.json.
+
+requirements.txt
+*.py
+vfsbot/
+tests/
+deploy/
+
+config.ini
+config.ini.dist
+venv/
+__pycache__/
+*.pyc
+chrome_profile/
+*.log
+
+# Local build artifact of build_guide.py; Vercel builds its own into public/.
+guide.html
