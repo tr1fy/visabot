@@ -2,24 +2,29 @@
 """Generate a per-user VFS-Bot bookmarklet URL.
 
 Usage:
-    python3 generate_bookmarklet.py <chat_id> [relay_url]
+    python3 generate_bookmarklet.py <chat_id> [--diagnostic] [relay_url]
 
 <chat_id> is the user's numeric Telegram ID (get it by having them message
 @userinfobot -- that number is also their private-chat ID with this bot).
 
-<relay_url> defaults to the relay_url value in config.ini, or the RELAY_URL
+--diagnostic generates the request-logging bookmarklet instead of the bot.
+
+<relay_url> defaults to [RELAY] url in config.ini, or the RELAY_URL
 environment variable.
 
 Prints the `javascript:...` URL to stdout, ready to paste into a browser
 bookmark's URL field.
 
-This is the operator-side path: it mints the user key offline from the shared
+This is the operator-side path: it mints the user key offline from the relay
 secret. Users onboarding themselves through the public guide page get the same
 key from /api/enroll instead, after confirming a code sent to their chat.
 
 Note: the bot token is NOT embedded in the bookmarklet any more. It stays in
 the relay's server environment. See the security note at the top of
 bookmarklet.js.
+
+The relay secret is deliberately separate from the bot token, so the token can
+be rotated without invalidating every issued bookmarklet.
 """
 import base64
 import hashlib
@@ -96,19 +101,41 @@ def generate(
     return "javascript:" + encode(minified)
 
 
+MIN_SECRET_LENGTH = 16
+
+SECRET_HELP = """\
+[RELAY] secret is missing or shorter than {n} characters in config.ini.
+
+Generate one with:
+  python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+
+Set the same value as RELAY_SECRET in the relay's environment (Vercel project
+settings). Do NOT reuse telegram_bot_token: keeping them separate is what lets
+you rotate the bot token without invalidating every user's bookmarklet.\
+"""
+
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
+    args = [a for a in sys.argv[1:] if a != "--diagnostic"]
+    diagnostic = "--diagnostic" in sys.argv
+    if len(args) not in (1, 2):
         print(__doc__)
         sys.exit(1)
 
     from vfsbot.config import load_config
 
     cfg = load_config("config.ini")
-    secret = getattr(cfg, "relay_secret", "") or cfg.telegram_bot_token
+
+    secret = getattr(cfg, "relay_secret", "")
+    if not secret or len(secret) < MIN_SECRET_LENGTH:
+        print(SECRET_HELP.format(n=MIN_SECRET_LENGTH), file=sys.stderr)
+        sys.exit(1)
+
     relay_url = (
-        sys.argv[2]
-        if len(sys.argv) == 3
+        args[1]
+        if len(args) == 2
         else (getattr(cfg, "relay_url", "") or os.environ.get("RELAY_URL", ""))
     )
 
-    print(generate(sys.argv[1], secret, relay_url))
+    source = "diagnostic_bookmarklet.js" if diagnostic else "bookmarklet.js"
+    print(generate(args[0], secret, relay_url, source))

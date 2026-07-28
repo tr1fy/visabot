@@ -17,11 +17,28 @@ function botToken() {
   return t;
 }
 
-// Falls back to the bot token so operators do not have to manage a second
-// secret. Consequence worth knowing: rotating the bot token invalidates every
-// issued user key, which is the behaviour you want after a leak anyway.
+const MIN_SECRET_LENGTH = 16;
+
+// Deliberately independent of TELEGRAM_BOT_TOKEN.
+//
+// An earlier version fell back to the bot token when RELAY_SECRET was unset,
+// which quietly coupled the two: rotating the token would have invalidated
+// every issued user key and broken every user's bookmarklet at once. That cost
+// is exactly what makes people postpone rotating a leaked token. Keeping the
+// secret separate makes token rotation free, so it can happen whenever it needs
+// to.
 function relaySecret() {
-  return process.env.RELAY_SECRET || botToken();
+  const s = process.env.RELAY_SECRET;
+  if (!s || s.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `RELAY_SECRET is missing or shorter than ${MIN_SECRET_LENGTH} characters. Generate one with:\n` +
+        `  node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"\n` +
+        'and set it in the project environment. Do NOT reuse TELEGRAM_BOT_TOKEN: keeping ' +
+        'them separate is what lets you rotate the bot token without invalidating every ' +
+        "user's bookmarklet.",
+    );
+  }
+  return s;
 }
 
 function isValidChatId(chatId) {

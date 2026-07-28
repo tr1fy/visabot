@@ -21,6 +21,12 @@ channel_id =
 ;   url = https://visabot-nine.vercel.app
 ; The bookmarklet talks only to this; the bot token never reaches the browser.
 url =
-; Optional. Leave empty to derive user keys from bot_token instead.
-; Must match RELAY_SECRET in the relay's environment if set there.
+; REQUIRED. Must match RELAY_SECRET in the relay's environment.
+; Generate with:
+;   python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+;
+; Keep this SEPARATE from bot_token. User keys are derived from this secret, so
+; if the two were the same, rotating the bot token would invalidate every
+; issued bookmarklet at once -- which is exactly the cost that makes people
+; postpone rotating a leaked token. Separate secrets make rotation free.
 secret =
