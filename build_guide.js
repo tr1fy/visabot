@@ -63,14 +63,24 @@ if (minified.includes('__BOT_TOKEN__')) {
   throw new Error('__BOT_TOKEN__ is still referenced in bookmarklet.js -- refusing to build');
 }
 
+// Which Telegram bot the guide tells people to press Start on. Defaults to the
+// original so upstream builds are unchanged; set BOT_USERNAME when running your
+// own bot, or the page sends your users to somebody else's.
+const botUsername = (process.env.BOT_USERNAME || 'vfsreg_bot').replace(/^@/, '');
+
 const template = fs.readFileSync(templatePath, 'utf8');
 const injected = template
   .replace('__BOOKMARKLET_SOURCE_JSON__', JSON.stringify(minified))
   .split('__RELAY_URL__')
-  .join(relayUrl);
+  .join(relayUrl)
+  .split('__BOT_USERNAME__')
+  .join(botUsername);
 
 fs.mkdirSync(outDir, { recursive: true });
 fs.writeFileSync(path.join(outDir, 'index.html'), injected, 'utf8');
 fs.writeFileSync(path.join(outDir, 'robots.txt'), 'User-agent: *\nDisallow: /\n', 'utf8');
 
-console.log(`wrote ${path.join(outDir, 'index.html')} (${injected.length} chars), relay ${relayUrl}`);
+console.log(
+  `wrote ${path.join(outDir, 'index.html')} (${injected.length} chars), ` +
+    `relay ${relayUrl}, bot @${botUsername}`,
+);

@@ -19,6 +19,7 @@ class VfsConfig:
     # relay_secret defaults to the bot token so operators need only one secret.
     relay_url: str = ""
     relay_secret: str = ""
+    bot_username: str = ""
 
 
 def load_config(path: str) -> VfsConfig:
@@ -44,4 +45,5 @@ def load_config(path: str) -> VfsConfig:
         browser_backend=vfs.get("browser_backend", "pydoll").strip(),
         relay_url=relay.get("url", "").strip(),
         relay_secret=relay.get("secret", "").strip(),
+        bot_username=relay.get("bot_username", "").strip(),
     )

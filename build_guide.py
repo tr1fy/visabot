@@ -45,16 +45,22 @@ def build(template_path: str = "guide_template.html", out_path: str = "guide.htm
     relay_url = (cfg.relay_url or "").rstrip("/")
     source = extract_bookmarklet_source(relay_url=relay_url)
 
+    # Which Telegram bot the guide tells people to press Start on. Defaults to
+    # the original so existing builds are unchanged; set [RELAY] bot_username
+    # when running your own bot, or the page sends users to somebody else's.
+    bot_username = (getattr(cfg, "bot_username", "") or "vfsreg_bot").lstrip("@")
+
     with open(template_path, encoding="utf-8") as f:
         template = f.read()
     # json.dumps produces a valid, safely-escaped JS string literal (handles
     # backslashes, quotes, backticks, newlines) for embedding in <script>.
     injected = template.replace("__BOOKMARKLET_SOURCE_JSON__", json.dumps(source))
     injected = injected.replace("__RELAY_URL__", relay_url)
+    injected = injected.replace("__BOT_USERNAME__", bot_username)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(injected)
-    print(f"wrote {out_path} ({len(injected)} chars), relay {relay_url}")
+    print(f"wrote {out_path} ({len(injected)} chars), relay {relay_url}, bot @{bot_username}")
 
 
 if __name__ == "__main__":

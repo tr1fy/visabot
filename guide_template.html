@@ -214,7 +214,7 @@
 
   <h2>Шаг 1. Написать боту в Telegram</h2>
   <div class="card">
-    <p>Откройте <a href="https://t.me/vfsreg_bot" target="_blank" rel="noopener">@vfsreg_bot</a> и нажмите <strong>Start</strong> (или отправьте любое сообщение). Это обязательно — Telegram не разрешает ботам первыми писать людям, которые с ними не общались.</p>
+    <p>Откройте <a href="https://t.me/__BOT_USERNAME__" target="_blank" rel="noopener">@__BOT_USERNAME__</a> и нажмите <strong>Start</strong> (или отправьте любое сообщение). Это обязательно — Telegram не разрешает ботам первыми писать людям, которые с ними не общались.</p>
   </div>
 
   <h2>Шаг 2. Узнать свой chat ID</h2>
@@ -352,6 +352,7 @@ function encodeBookmarklet(s) {
 }
 
 var RELAY_URL = '__RELAY_URL__';
+var BOT_USERNAME = '__BOT_USERNAME__';
 
 // The bookmarklet no longer carries the bot token, so the page cannot simply
 // splice one in. Instead the relay mints a per-user key, but only after the
@@ -378,7 +379,7 @@ var copyStatus = document.getElementById('copy-status');
 
 var ERRORS = {
   bad_chat_id: 'Chat ID должен быть числом (его даёт @userinfobot). Проверьте, что скопировали только цифры.',
-  cannot_message_chat: 'Бот не может вам написать. Откройте @vfsreg_bot в Telegram, нажмите Start и попробуйте снова.',
+  cannot_message_chat: 'Бот не может вам написать. Откройте @' + BOT_USERNAME + ' в Telegram, нажмите Start и попробуйте снова.',
   bad_code: 'Код неверный или устарел. Запросите новый и введите его в течение 10 минут.',
   forbidden: 'Ключ не принят сервером. Запросите код заново.'
 };

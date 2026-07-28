@@ -30,3 +30,7 @@ url =
 ; issued bookmarklet at once -- which is exactly the cost that makes people
 ; postpone rotating a leaked token. Separate secrets make rotation free.
 secret =
+; Telegram username of YOUR bot, without the @. The guide page tells users to
+; press Start on it. Defaults to vfsreg_bot if left empty -- set this when
+; running your own bot, or the page sends your users to somebody else's.
+bot_username =

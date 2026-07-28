@@ -223,6 +223,14 @@ test('the diagnostic bookmarklet carries no token either', () => {
   assert.ok(body.includes('__USER_KEY__'), 'diagnostic needs a per-user key');
 });
 
+test('the guide template hardcodes no bot username', () => {
+  // Running your own bot must not leave the page telling users to press Start
+  // on somebody else's.
+  const src = fs.readFileSync(path.join(ROOT, 'guide_template.html'), 'utf8');
+  assert.ok(!src.includes('vfsreg_bot'), 'bot username must come from __BOT_USERNAME__');
+  assert.ok(src.includes('__BOT_USERNAME__'), 'placeholder must be present');
+});
+
 test('build_guide.py does not substitute the bot token', () => {
   const src = fs.readFileSync(path.join(ROOT, 'build_guide.py'), 'utf8');
   assert.ok(
